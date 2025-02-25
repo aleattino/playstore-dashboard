@@ -318,7 +318,7 @@ with tabs[0]:
             rating = market_analysis.loc[cat, 'avg_rating']
             apps = market_analysis.loc[cat, 'num_apps']
             paid = market_analysis.loc[cat, 'paid_perc']
-            top_text += f"<b>{cat}</b>: score {score:.2f} (rating {rating:.1f}, app {apps}, a pagamento {paid:.1f}%)<br>"
+            top_text += f"<b>{cat}</b>: score {score:.2f} (rating {rating:.1f}, app {apps}, propensione {paid:.1f}%)<br>"
 
         fig.add_annotation(
             x=0.99,  
