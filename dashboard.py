@@ -49,8 +49,9 @@ def load_and_clean_data():
         apps_df = pd.read_csv('googleplaystore.csv')
         reviews_df = pd.read_csv('googleplaystore_user_reviews.csv')
         
-        # Pulizia base
+        # Pulizia base - rimuovi app con categoria mal formattata e duplicati
         apps_df = apps_df[apps_df['Category'] != '1.9'].copy()
+        apps_df = apps_df.drop_duplicates(subset=['App'], keep='first')  # Aggiungi questa riga
         
         # Conversioni di base
         apps_df['Size_MB'] = apps_df['Size'].apply(lambda x: 
@@ -71,11 +72,6 @@ def load_and_clean_data():
         
         # Pulizia versione Android
         apps_df['Android_Ver_Clean'] = apps_df['Android Ver'].str.extract(r'(\d+\.?\d?)').astype(float)
-        
-        # Aggiunta campi per evoluzione temporale
-        apps_df['Update_Year'] = apps_df['Last Updated'].dt.year
-        apps_df['Update_Month'] = apps_df['Last Updated'].dt.month
-        apps_df['Update_YearMonth'] = apps_df['Last Updated'].dt.to_period('M')
         
         return apps_df, reviews_df
         
@@ -141,47 +137,40 @@ with tabs[0]:
     
     @st.cache_data
     def create_category_distribution(df):
+        """Crea un grafico a barre che replica esattamente quello originale"""
+        # Calcola le statistiche per categoria
         category_stats = df.groupby('Category').agg({
             'App': 'count',
-            'Rating': lambda x: round(x.mean(), 1)  # Arrotonda a 1 decimale
+            'Rating': 'mean'
         }).reset_index()
         
+        # Creazione grafico con plotly express - usiamo ESATTAMENTE gli stessi parametri del codice originale
         fig = px.bar(
             category_stats,
             x='Category',
             y='App',
             color='Rating',
+            title='Distribuzione delle app per categoria e rating medio',
             labels={
                 'App': 'Numero di app',
                 'Category': 'Categoria',
                 'Rating': 'Rating medio'
             },
-            color_continuous_scale=[
-                [0, '#B30000'], 
-                [0.4, '#FF0000'], 
-                [0.6, '#FFA500'], 
-                [0.75, '#2ECC40'], 
-                [1, '#00B300']
-            ],
+            color_continuous_scale=[[0, '#B30000'], [0.4, '#FF0000'],
+                                [0.6, '#FFA500'], [0.75, '#2ECC40'],
+                                [1, '#00B300']],
             range_color=[3.2, 4.8]
         )
         
+        # Aggiorniamo il layout per essere il più fedele possibile all'originale
         fig.update_layout(
-            height=500,
-            margin=dict(t=20, l=50, r=50, b=100),
+            xaxis_tickangle=-45,
+            showlegend=True,
+            height=600,
+            title_x=0.5,
             font=dict(family="Arial", size=12),
-            plot_bgcolor='white',
-            xaxis=dict(
-                showgrid=True,
-                gridwidth=1,
-                gridcolor='lightgrey',
-                tickangle=-45
-            ),
-            yaxis=dict(
-                showgrid=True,
-                gridwidth=1,
-                gridcolor='lightgrey'
-            )
+            margin=dict(t=100, l=50, r=50, b=100),
+            plot_bgcolor='rgba(240, 245, 255, 0.95)'  # Sfondo azzurrino chiaro come nell'originale
         )
         
         return fig
@@ -262,8 +251,108 @@ with tabs[0]:
         nan_ranges = df_paid[df_paid['Rating'].isna()]['price_range'].unique()
         if len(nan_ranges) > 0:
             st.caption("Nota: Le barre grigie indicano fasce di prezzo per cui non sono disponibili valutazioni")
+   
+    # 3. Mappa competitiva del mercato 
+    st.subheader("Mappa competitiva del mercato")
     
-    # 3. Struttura del mercato per categoria
+    @st.cache_data
+    def create_market_competition(df):
+        """Crea una mappa competitiva del mercato basata sul numero di app e rating"""
+        market_analysis = df.groupby('Category').agg({
+            'App': 'count',
+            'Rating': 'mean',
+            'Price_Clean': lambda x: (x > 0).mean() * 100,
+            'Installs_Clean': 'mean'
+        }).round(2)
+
+        market_analysis.columns = ['num_apps', 'avg_rating', 'paid_perc', 'avg_installs']
+
+        # Calcolo indice dimensione mercato
+        market_analysis['market_size_index'] = (
+            (market_analysis['num_apps'] - market_analysis['num_apps'].min()) /
+            (market_analysis['num_apps'].max() - market_analysis['num_apps'].min())
+        )
+
+        # Calcolo opportunity score
+        market_analysis['opportunity_score'] = (
+            market_analysis['avg_rating'] * 0.4 +
+            (1 - market_analysis['market_size_index']) * 0.3 +
+            market_analysis['paid_perc'] * 0.3
+        )
+
+        # Creazione grafico
+        fig = go.Figure(data=[
+            go.Scatter(
+                x=market_analysis['num_apps'],
+                y=market_analysis['avg_rating'],
+                mode='markers+text',
+                text=market_analysis.index,
+                textposition='top center',
+                marker=dict(
+                    size=market_analysis['market_size_index'] * 50 + 20,
+                    color=market_analysis['avg_rating'],
+                    colorscale=[[0, '#B30000'], [0.4, '#FF0000'],
+                               [0.6, '#FFA500'], [0.75, '#2ECC40'],
+                               [1, '#00B300']],
+                    colorbar=dict(
+                        title="Rating medio"
+                    ),
+                    cmin=3.2,
+                    cmax=4.8
+                ),
+                hovertemplate=(
+                    "<b>%{text}</b><br>" +
+                    "Numero app: %{x}<br>" +
+                    "Rating medio: %{marker.color:.2f}<br>" +
+                    "Propensione al pagamento: %{marker.size:.1f}%<br>" +
+                    "<extra></extra>"
+                )
+            )
+        ])
+
+        # Aggiungi annotazione con migliori opportunità
+        top_opportunities = market_analysis.nlargest(5, 'opportunity_score')
+        top_text = "<b>Top 5 opportunità di mercato:</b><br>"
+        for cat in top_opportunities.index:
+            score = market_analysis.loc[cat, 'opportunity_score']
+            rating = market_analysis.loc[cat, 'avg_rating']
+            apps = market_analysis.loc[cat, 'num_apps']
+            paid = market_analysis.loc[cat, 'paid_perc']
+            top_text += f"<b>{cat}</b>: score {score:.2f} (rating {rating:.1f}, app {apps}, a pagamento {paid:.1f}%)<br>"
+
+        fig.add_annotation(
+            x=0.99,  
+            y=0.01,  
+            xref="paper",
+            yref="paper",
+            xanchor="right",  
+            yanchor="bottom",  
+            text=top_text,
+            showarrow=False,
+            font=dict(size=11),
+            align="left",
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            bordercolor="black",
+            borderwidth=1,
+            borderpad=6
+        )
+
+        fig.update_layout(
+            title='Mappa competitiva del mercato',
+            xaxis_title='Numero di app (competizione)',
+            yaxis_title='Rating medio',
+            height=600,
+            showlegend=False,
+            plot_bgcolor='white',
+            font=dict(family="Arial", size=12),
+            margin=dict(t=50, l=50, r=50, b=50)
+        )
+        
+        return fig
+    
+    st.plotly_chart(create_market_competition(filtered_df), use_container_width=True)
+    
+    # 4. Struttura del mercato per categoria
     st.subheader("Struttura del mercato per categoria")
     
     @st.cache_data
@@ -576,16 +665,30 @@ with tabs[2]:
     
     @st.cache_data
     def create_temporal_evolution(df):
-        # Preparazione dati temporali
+        """Crea il grafico dell'evoluzione temporale delle metriche chiave"""
+        # Prima prepariamo i dati
+        df = df.copy()
+        
+        # Assicuriamoci che Last Updated sia datetime
+        df['Last Updated'] = pd.to_datetime(df['Last Updated'])
+        
+        # Creiamo la colonna Update_Year se non esiste
+        if 'Update_Year' not in df.columns:
+            df['Update_Year'] = df['Last Updated'].dt.year
+        
+        # Calcolo metriche temporali aggregate per anno
         time_metrics = df.groupby('Update_Year').agg({
             'Rating': 'mean',
             'Size_MB': 'mean',
             'Installs_Clean': 'mean',
-            'App': 'count',
-            'Price_Clean': lambda x: x[x > 0].mean() if len(x[x > 0]) > 0 else np.nan
+            'App': 'count'
         }).round(2)
         
-        # Creazione figura con subplot
+        # Prezzi medi solo per app a pagamento
+        avg_price = df[df['Price_Clean'] > 0].groupby('Update_Year')['Price_Clean'].mean()
+        time_metrics['Price_Clean'] = avg_price
+        
+        # Creazione grafico con subplot
         fig = make_subplots(
             rows=2,
             cols=1,
@@ -597,15 +700,17 @@ with tabs[2]:
             )
         )
         
-        # Configurazione tracce subplot 1
+        # Configurazione tracce subplot 1 - Metriche di prodotto
         traces_subplot1 = [
             ('Rating', 'Rating medio', '#2ECC40'),
             ('Price_Clean', 'Prezzo medio ($)', '#FF4136'),
             ('Size_MB', 'Dimensione media (MB)', '#0074D9')
         ]
         
+        # Aggiunta tracce subplot 1 - Metriche di prodotto
         for col, name, color in traces_subplot1:
             data = time_metrics[col].fillna(0)
+            
             fig.add_trace(
                 go.Scatter(
                     x=time_metrics.index,
@@ -617,7 +722,7 @@ with tabs[2]:
                 col=1
             )
         
-        # Aggiunta barre numero app subplot 2
+        # Aggiunta barre numero app subplot 2 - Metriche di mercato
         fig.add_trace(
             go.Bar(
                 x=time_metrics.index,
@@ -631,7 +736,7 @@ with tabs[2]:
             col=1
         )
         
-        # Aggiunta linea installazioni subplot 2
+        # Aggiunta linea installazioni subplot 2 - Metriche di mercato
         fig.add_trace(
             go.Scatter(
                 x=time_metrics.index,
@@ -643,6 +748,7 @@ with tabs[2]:
             col=1
         )
         
+        # Ottimizzazione layout
         fig.update_layout(
             height=900,
             showlegend=True,
@@ -659,8 +765,13 @@ with tabs[2]:
                 yanchor='bottom',
                 y=1.05,
                 xanchor='center',
-                x=0.5
-            )
+                x=0.5,
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='lightgray',
+                borderwidth=1
+            ),
+            margin=dict(t=120, b=50, l=50, r=50),
+            hovermode='x unified'
         )
         
         # Ottimizzazione assi
@@ -670,17 +781,28 @@ with tabs[2]:
                 showgrid=True,
                 gridwidth=1,
                 gridcolor='lightgray',
-                row=row
-            )
-            fig.update_yaxes(
-                showgrid=True,
-                gridwidth=1,
-                gridcolor='lightgray',
-                row=row
+                row=row,
+                col=1
             )
         
-        fig.update_yaxes(title='Valore', row=1, col=1)
-        fig.update_yaxes(title='Numero', type='log', row=2, col=1)
+        fig.update_yaxes(
+            title='Valore',
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='lightgray',
+            row=1,
+            col=1
+        )
+        
+        fig.update_yaxes(
+            title='Numero',
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='lightgray',
+            type='log',
+            row=2,
+            col=1
+        )
         
         return fig
 
